@@ -2,7 +2,7 @@
 #include <cassert>
 
 int main() {
-    garbage_collector_state gc{};
+    gc::state gc{};
 
     int* a = (int*)gc.push(sizeof(int));
     int* b = (int*)gc.push(sizeof(int));
