@@ -4,7 +4,7 @@
 namespace gc {
     state::~state() {
         _stack_length = 0;
-        // TODO: sweep would be a no-op?
+        // TODO: mark would be a no-op?
         collect();
     }
 

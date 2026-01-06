@@ -4,7 +4,6 @@
 #include <new>
 
 namespace gc {
-
     struct state {
     public:
         using size_type = std::size_t;
