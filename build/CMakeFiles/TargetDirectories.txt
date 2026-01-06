@@ -1,3 +1,0 @@
-/home/rdeivert/projects/garbage_collector/build/CMakeFiles/garbage_collector.dir
-/home/rdeivert/projects/garbage_collector/build/CMakeFiles/edit_cache.dir
-/home/rdeivert/projects/garbage_collector/build/CMakeFiles/rebuild_cache.dir
