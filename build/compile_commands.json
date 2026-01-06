@@ -1,0 +1,14 @@
+[
+{
+  "directory": "/home/rdeivert/projects/garbage_collector/build",
+  "command": "/usr/sbin/c++  -I/home/rdeivert/projects/garbage_collector/include -g -Wall -Wextra -Wpedantic -Werror -std=c++23 -fsanitize=address,undefined -o CMakeFiles/garbage_collector.dir/src/main.cpp.o -c /home/rdeivert/projects/garbage_collector/src/main.cpp",
+  "file": "/home/rdeivert/projects/garbage_collector/src/main.cpp",
+  "output": "CMakeFiles/garbage_collector.dir/src/main.cpp.o"
+},
+{
+  "directory": "/home/rdeivert/projects/garbage_collector/build",
+  "command": "/usr/sbin/c++  -I/home/rdeivert/projects/garbage_collector/include -g -Wall -Wextra -Wpedantic -Werror -std=c++23 -fsanitize=address,undefined -o CMakeFiles/garbage_collector.dir/src/gc.cpp.o -c /home/rdeivert/projects/garbage_collector/src/gc.cpp",
+  "file": "/home/rdeivert/projects/garbage_collector/src/gc.cpp",
+  "output": "CMakeFiles/garbage_collector.dir/src/gc.cpp.o"
+}
+]

@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/rdeivert/projects/garbage_collector/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
