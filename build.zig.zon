@@ -3,7 +3,12 @@
     .version = "0.0.0",
     .fingerprint = 0x396656cb66d2e4, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .win32 = .{
+            .url = "git+https://github.com/marlersoft/zigwin32#9f15c276b4e9d05afd34a10d8662a7dfc34647ea",
+            .hash = "win32-42.0.39-preview-mX5pFS564gPTezZn4v3TMxRnfJUrZNx1B_F2p2HKXOeG",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

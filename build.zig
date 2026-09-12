@@ -16,6 +16,9 @@ pub fn build(b: *std.Build) void {
         .root_module = root_mod,
     });
 
+    const win32 = b.dependency("win32", .{});
+    lib.root_module.addImport("win32", win32.module("win32"));
+
     b.installArtifact(lib);
 
     const test_step = b.step("test", "Run unit tests");

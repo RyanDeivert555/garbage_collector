@@ -81,6 +81,7 @@ fn markStack(gc: *State) void {
 fn markGlobals(gc: *State) AllocError!void {
     const ranges = try switch (builtin.target.os.tag) {
         .linux => internals.linux.getGlobalSections(gc.child_allocator),
+        .windows => internals.windows.getGlobalSections(gc.child_allocator),
         else => @compileError("os " ++ @tagName(builtin.target.os.tag) ++ " not supported"),
     };
     defer gc.child_allocator.free(ranges);
