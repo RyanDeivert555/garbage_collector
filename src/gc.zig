@@ -1,31 +1,26 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const internals = @import("internals.zig");
 const Alignment = std.mem.Alignment;
 const Allocator = std.mem.Allocator;
-const VTable = std.mem.Allocator.VTable;
-const AllocError = std.mem.Allocator.Error;
+const VTable = Allocator.VTable;
+const AllocError = Allocator.Error;
 
 pub const Flag = enum {
+    // unscanned allocation
     unmarked,
+    // reachable allocation, to be able to survive collection
     marked,
-    pinned,
 };
 
 pub const Allocation = struct {
     memory: []u8,
     alignment: Alignment,
     flag: Flag,
-};
-
-pub const GlobalSection = struct {
-    name: []const u8,
-    memory: []const u8,
+    pinned: bool,
 };
 
 const AllocationMap = std.AutoHashMapUnmanaged([*]const u8, Allocation);
-
-fn getStackBottom() *anyopaque {
-    return @ptrFromInt(0x1);
-}
 
 fn markAddress(gc: *State, base: [*]const u8) void {
     const allocation = gc.allocations.getPtr(base) orelse return;
@@ -40,11 +35,18 @@ fn markAddress(gc: *State, base: [*]const u8) void {
 }
 
 fn markAddressRange(gc: *State, memory: []const u8) void {
-    const start: usize = @intFromPtr(memory.ptr);
-    const end: usize = @intFromPtr(memory.ptr + memory.len);
+    const start = std.mem.alignForward(usize, @intFromPtr(memory.ptr), @alignOf(usize));
+    const end = std.mem.alignBackward(usize, @intFromPtr(memory.ptr + memory.len), @alignOf(usize));
 
-    for (start..end) |p| {
-        markAddress(gc, @ptrFromInt(p));
+    var addr = start;
+    while (addr < end) : (addr += @sizeOf(usize)) {
+        const slot: *const usize = @ptrFromInt(addr);
+        const referenced_addr = slot.*;
+        if (referenced_addr == 0) {
+            continue;
+        }
+
+        markAddress(gc, @ptrFromInt(referenced_addr));
     }
 }
 
@@ -52,40 +54,38 @@ fn markPinned(gc: *State) void {
     var it = gc.allocations.valueIterator();
 
     while (it.next()) |allocation| {
-        if (allocation.flag == .pinned) {
+        if (allocation.pinned) {
             markAddress(gc, allocation.memory.ptr);
         }
     }
 }
 
 fn markStack(gc: *State) void {
-    _ = gc;
-    // TODO: get access to stack bottom
-}
+    const stack_frame = @frameAddress();
 
-fn onObjectCallback(info: *std.posix.dl_phdr_info, size: usize, ranges: *std.array_list.Managed([2]usize)) AllocError!void {
-    _ = size;
+    if (gc.stack_ptr > stack_frame) {
+        const memory_start: [*]const u8 = @ptrFromInt(stack_frame);
+        const len = gc.stack_ptr - stack_frame;
+        const memory = memory_start[0..len];
 
-    for (info.phdr[0..info.phnum]) |phdr| {
-        if (phdr.type == .LOAD and phdr.flags.W) {
-            const start = info.phdr + phdr.vaddr;
-            const end = start + phdr.memsz;
+        markAddressRange(gc, memory);
+    } else {
+        const memory_start: [*]const u8 = @ptrFromInt(gc.stack_ptr);
+        const len = stack_frame - gc.stack_ptr;
+        const memory = memory_start[0..len];
 
-            try ranges.append([2]usize{
-                @intFromPtr(start),
-                @intFromPtr(end),
-            });
-        }
+        markAddressRange(gc, memory);
     }
 }
 
-fn markGlobals(gc: *State) void {
-    var ranges: std.array_list.Managed([2]usize) = .init(gc.child_allocator);
-    defer ranges.deinit();
+fn markGlobals(gc: *State) AllocError!void {
+    const ranges = try switch (builtin.target.os.tag) {
+        .linux => internals.linux.getGlobalSections(gc.child_allocator),
+        else => @compileError("os " ++ @tagName(builtin.target.os.tag) ++ " not supported"),
+    };
+    defer gc.child_allocator.free(ranges);
 
-    _ = std.posix.dl_iterate_phdr(&ranges, AllocError, onObjectCallback) catch unreachable;
-
-    for (ranges.items) |range| {
+    for (ranges) |range| {
         const start, const end = range;
         const len = end - start;
         const memory_start: [*]u8 = @ptrFromInt(start);
@@ -95,21 +95,20 @@ fn markGlobals(gc: *State) void {
     }
 }
 
-fn mark(gc: *State) void {
+fn mark(gc: *State) AllocError!void {
     markPinned(gc);
     markStack(gc);
-    markGlobals(gc);
+    try markGlobals(gc);
 }
 
-fn sweep(gc: *State) void {
-    // TODO: refactor
-    const potential_frees = gc.child_allocator.alloc([*]const u8, gc.allocations.count()) catch unreachable;
+fn sweep(gc: *State) AllocError!void {
+    const potential_frees = try gc.child_allocator.alloc([*]const u8, gc.allocations.count());
     defer gc.child_allocator.free(potential_frees);
-    var potential_free_count: u64 = 0;
+    var potential_free_count: usize = 0;
 
     var it = gc.allocations.valueIterator();
     while (it.next()) |allocation| {
-        if (allocation.flag == .unmarked) {
+        if (allocation.flag == .unmarked and !allocation.pinned) {
             potential_frees[potential_free_count] = allocation.memory.ptr;
             potential_free_count += 1;
         } else if (allocation.flag == .marked) {
@@ -118,9 +117,10 @@ fn sweep(gc: *State) void {
     }
 
     for (potential_frees) |memory| {
-        const res = gc.allocations.fetchRemove(memory).?;
-        gc.live_bytes -= res.value.memory.len;
-        gc.child_allocator.rawFree(res.value.memory, res.value.alignment, @returnAddress());
+        const res = gc.allocations.fetchRemove(memory) orelse continue;
+        const allocation = res.value;
+        gc.live_bytes -= allocation.memory.len;
+        gc.child_allocator.rawFree(allocation.memory, allocation.alignment, @returnAddress());
     }
 
     computeSweepLimit(gc);
@@ -133,15 +133,21 @@ fn computeSweepLimit(gc: *State) void {
     gc.sweep_limit = @max(target, floor_bytes);
 }
 
+fn resetAllMarked(gc: *State) void {
+    var it = gc.allocations.valueIterator();
+    while (it.next()) |allocation| {
+        if (allocation.flag == .marked) {
+            allocation.flag = .unmarked;
+        }
+    }
+}
+
 pub const State = struct {
     allocations: AllocationMap,
-    global_sections: [global_section_count]GlobalSection,
-    stack_bottom: *const anyopaque,
+    stack_ptr: usize,
     child_allocator: Allocator,
     sweep_limit: u64,
     live_bytes: u64,
-
-    const global_section_count = 2;
 
     const vtable: VTable = .{
         .alloc = rawAlloc,
@@ -153,11 +159,7 @@ pub const State = struct {
     pub fn init(child_allocator: Allocator, sweep_limit: u64) State {
         return .{
             .allocations = .empty,
-            .global_sections = [global_section_count]GlobalSection{
-                undefined,
-                undefined,
-            },
-            .stack_bottom = getStackBottom(),
+            .stack_ptr = @frameAddress(),
             .child_allocator = child_allocator,
             .sweep_limit = sweep_limit,
             .live_bytes = 0,
@@ -175,11 +177,11 @@ pub const State = struct {
         self.allocations.deinit(self.child_allocator);
     }
 
-    fn rawAlloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+    pub fn rawAlloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
         const self: *State = @ptrCast(@alignCast(ptr));
 
         if (self.live_bytes > self.sweep_limit) {
-            self.collect();
+            self.collect() catch return null;
         }
 
         const base = self.child_allocator.rawAlloc(len, alignment, ret_addr) orelse return null;
@@ -188,6 +190,7 @@ pub const State = struct {
             .memory = memory,
             .alignment = alignment,
             .flag = .unmarked,
+            .pinned = false,
         }) catch {
             self.child_allocator.rawFree(memory, alignment, ret_addr);
             return null;
@@ -198,32 +201,9 @@ pub const State = struct {
         return base;
     }
 
-    fn rawResize(self: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
-        _ = self;
-        _ = memory;
-        _ = alignment;
-        _ = new_len;
-        _ = ret_addr;
-
-        return false;
-    }
-
-    fn rawRemap(self: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-        _ = self;
-        _ = memory;
-        _ = alignment;
-        _ = new_len;
-        _ = ret_addr;
-
-        return null;
-    }
-
-    fn rawFree(self: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) void {
-        _ = self;
-        _ = memory;
-        _ = alignment;
-        _ = ret_addr;
-    }
+    pub const rawResize = Allocator.noResize;
+    pub const rawRemap = Allocator.noRemap;
+    pub const rawFree = Allocator.noFree;
 
     pub fn allocator(self: *State) Allocator {
         return .{
@@ -233,21 +213,22 @@ pub const State = struct {
     }
 
     pub fn pin(self: *State, base: anytype) void {
-        const raw_bytes = std.mem.asBytes(base);
+        const raw_bytes: [*]const u8 = @ptrCast(@alignCast(base));
 
         const allocation = self.allocations.getPtr(raw_bytes) orelse return;
-        allocation.flag = .pinned;
+        allocation.pinned = true;
     }
 
     pub fn unpin(self: *State, base: anytype) void {
-        const raw_bytes = std.mem.asBytes(base);
+        const raw_bytes: [*]const u8 = @ptrCast(@alignCast(base));
 
         const allocation = self.allocations.getPtr(raw_bytes) orelse return;
-        allocation.flag = .marked;
+        allocation.pinned = false;
     }
 
-    pub fn collect(self: *State) void {
-        mark(self);
-        sweep(self);
+    pub fn collect(self: *State) AllocError!void {
+        errdefer resetAllMarked(self);
+        try mark(self);
+        try sweep(self);
     }
 };
